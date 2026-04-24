@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Telegram Clone Messenger</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="https://unpkg.com/peerjs@1.5.1/dist/peerjs.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Login Screen -->
+        <div id="loginScreen" class="screen active">
+            <div class="login-container">
+                <div class="login-card">
+                    <div class="logo">
+                        <i class="fas fa-paper-plane"></i>
+                    </div>
+                    <h1>Telegram Clone</h1>
+                    <p class="subtitle">Войдите, чтобы начать общение</p>
+                    <div class="input-group">
+                        <input type="text" id="usernameInput" placeholder="Введите ваше имя" maxlength="30">
+                        <button id="loginButton" class="btn-primary">
+                            <i class="fas fa-arrow-right"></i>
+                        </button>
+                    </div>
+                    <div class="avatar-selection">
+                        <p>Выберите аватар:</p>
+                        <div class="avatar-grid" id="avatarGrid"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Chat Screen -->
+        <div id="chatScreen" class="screen">
+            <div class="chat-layout">
+                <!-- Sidebar -->
+                <div class="sidebar" id="sidebar">
+                    <div class="sidebar-header">
+                        <div class="user-profile">
+                            <div class="avatar" id="currentUserAvatar"></div>
+                            <span id="currentUsername"></span>
+                        </div>
+                        <button class="icon-btn" id="toggleSidebar">
+                            <i class="fas fa-bars"></i>
+                        </button>
+                    </div>
+                    <div class="search-container">
+                        <input type="text" id="searchInput" placeholder="Поиск...">
+                    </div>
+                    <div class="tabs">
+                        <button class="tab-btn active" data-tab="chats">
+                            <i class="fas fa-comments"></i> Чаты
+                        </button>
+                        <button class="tab-btn" data-tab="contacts">
+                            <i class="fas fa-users"></i> Контакты
+                        </button>
+                    </div>
+                    <div class="tab-content active" id="chatsTab">
+                        <div class="chat-list" id="chatList"></div>
+                    </div>
+                    <div class="tab-content" id="contactsTab">
+                        <div class="contacts-list" id="contactsList"></div>
+                        <button class="btn-secondary create-group-btn" id="createGroupBtn">
+                            <i class="fas fa-plus-circle"></i> Создать группу
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Main Chat Area -->
+                <div class="main-chat" id="mainChat">
+                    <!-- Empty state -->
+                    <div class="empty-state" id="emptyState">
+                        <div class="empty-state-content">
+                            <i class="fas fa-comments"></i>
+                            <h2>Выберите чат</h2>
+                            <p>Начните общение с контактами или создайте группу</p>
+                        </div>
+                    </div>
+
+                    <!-- Active chat -->
+                    <div class="active-chat" id="activeChat" style="display: none;">
+                        <div class="chat-header">
+                            <button class="icon-btn back-btn" id="backBtn">
+                                <i class="fas fa-arrow-left"></i>
+                            </button>
+                            <div class="chat-info">
+                                <div class="chat-avatar" id="chatAvatar"></div>
+                                <div class="chat-details">
+                                    <h3 id="chatName"></h3>
+                                    <span id="chatStatus"></span>
+                                </div>
+                            </div>
+                            <div class="chat-actions">
+                                <button class="icon-btn" id="voiceCallBtn">
+                                    <i class="fas fa-phone"></i>
+                                </button>
+                                <button class="icon-btn" id="videoCallBtn">
+                                    <i class="fas fa-video"></i>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="messages-container" id="messagesContainer">
+                            <div class="messages-list" id="messagesList"></div>
+                            <div id="typingIndicator" class="typing-indicator" style="display: none;">
+                                <span>печатает</span>
+                                <div class="typing-dots">
+                                    <span></span><span></span><span></span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="message-input-container">
+                            <button class="icon-btn" id="attachBtn">
+                                <i class="fas fa-paperclip"></i>
+                            </button>
+                            <input type="file" id="fileInput" style="display: none;" accept="image/*,audio/*,video/*">
+                            <div class="input-wrapper">
+                                <input type="text" id="messageInput" placeholder="Сообщение..." autocomplete="off">
+                                <button class="icon-btn" id="recordVoiceBtn">
+                                    <i class="fas fa-microphone"></i>
+                                </button>
+                            </div>
+                            <button class="icon-btn send-btn" id="sendMessageBtn">
+                                <i class="fas fa-paper-plane"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Call Modal -->
+    <div id="callModal" class="modal" style="display: none;">
+        <div class="call-container">
+            <div class="call-info">
+                <h3 id="callTitle">Звонок</h3>
+                <p id="callStatus">Соединение...</p>
+                <div id="remoteVideoContainer">
+                    <video id="remoteVideo" autoplay></video>
+                </div>
+                <div id="localVideoContainer">
+                    <video id="localVideo" autoplay muted></video>
+                </div>
+            </div>
+            <div class="call-controls">
+                <button class="call-btn" id="muteBtn">
+                    <i class="fas fa-microphone"></i>
+                </button>
+                <button class="call-btn end-call" id="endCallBtn">
+                    <i class="fas fa-phone-slash"></i>
+                </button>
+                <button class="call-btn" id="speakerBtn">
+                    <i class="fas fa-volume-up"></i>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Group Modal -->
+    <div id="groupModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Создать группу</h2>
+                <button class="close-btn" onclick="closeGroupModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <input type="text" id="groupNameInput" placeholder="Название группы" maxlength="50">
+                <p>Выберите участников:</p>
+                <div id="groupMembersList" class="group-members-list"></div>
+                <button class="btn-primary" id="confirmCreateGroup">
+                    <i class="fas fa-check"></i> Создать
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

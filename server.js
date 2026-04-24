@@ -9,11 +9,22 @@ const { v4: uuidv4 } = require('uuid');
 
 const app = express();
 const server = http.createServer(app);
+
+// Fix Socket.io for Render
 const io = socketIO(server, {
   cors: {
     origin: "*",
-    methods: ["GET", "POST"]
-  }
+    methods: ["GET", "POST"],
+    credentials: true
+  },
+  allowEIO3: true,
+  pingTimeout: 60000,
+  transports: ['websocket', 'polling']
+});
+
+// ЯВНО отдаём socket.io клиент
+app.get('/socket.io/socket.io.js', (req, res) => {
+  res.sendFile(path.join(__dirname, 'node_modules', 'socket.io', 'client-dist', 'socket.io.js'));
 });
 
 // Configure multer for file uploads
@@ -47,7 +58,10 @@ const upload = multer({
   }
 });
 
+// Serve static files from root
 app.use(express.static(__dirname));
+// Also serve node_modules for socket.io client
+app.use('/socket.io', express.static(path.join(__dirname, 'node_modules', 'socket.io', 'client-dist')));
 
 app.post('/upload', upload.single('file'), (req, res) => {
   if (!req.file) {
@@ -69,22 +83,20 @@ const peerServer = ExpressPeerServer(server, {
 
 app.use('/peerjs', peerServer);
 
-// Enhanced data stores
-const users = new Map(); // userId -> user object
-const messages = new Map(); // channelId -> messages array
-const groups = new Map(); // groupId -> group object
-const friendRequests = new Map(); // userId -> [requests]
-const userPasswords = new Map(); // userId -> password hash (simple for demo)
+// Data stores
+const users = new Map();
+const groups = new Map();
+const messages = new Map();
+const friendRequests = new Map();
+const userPasswords = new Map();
 
-// Socket.io
 io.on('connection', (socket) => {
-  console.log('New client connected:', socket.id);
+  console.log('✅ Client connected:', socket.id);
 
-  // User registration with password
   socket.on('register', (userData) => {
     const { username, password, avatar } = userData;
+    console.log('Register attempt:', username);
     
-    // Check if username exists
     let existingUser = null;
     for (let [id, user] of users) {
       if (user.username === username) {
@@ -94,36 +106,31 @@ io.on('connection', (socket) => {
     }
     
     if (existingUser) {
-      // Login attempt
       if (userPasswords.get(existingUser.id) === password) {
         existingUser.online = true;
         existingUser.socketId = socket.id;
-        
-        // Transfer data to new socket
-        const oldId = existingUser.id;
-        users.delete(oldId);
-        users.set(socket.id, existingUser);
         existingUser.id = socket.id;
+        
+        users.delete(existingUser.id);
+        users.set(socket.id, existingUser);
         
         socket.userId = socket.id;
         socket.emit('registered', existingUser);
-        socket.emit('loadMessages', getAllUserMessages(existingUser.username));
         broadcastUsersList();
-        socket.broadcast.emit('userOnline', existingUser);
+        console.log('✅ User logged in:', username);
       } else {
         socket.emit('loginError', 'Неверный пароль');
       }
       return;
     }
     
-    // New registration
     const user = {
       id: socket.id,
       username: username,
       avatar: avatar || username[0].toUpperCase(),
       online: true,
       socketId: socket.id,
-      lastSeen: Date.now()
+      friends: []
     };
     
     users.set(socket.id, user);
@@ -132,23 +139,17 @@ io.on('connection', (socket) => {
     
     socket.emit('registered', user);
     broadcastUsersList();
-    socket.broadcast.emit('userOnline', user);
+    console.log('✅ New user registered:', username);
   });
 
-  // Friend request
   socket.on('sendFriendRequest', (data) => {
     const { toUserId } = data;
     const fromUser = users.get(socket.id);
-    
     if (!fromUser || !users.has(toUserId)) return;
     
     if (!friendRequests.has(toUserId)) {
       friendRequests.set(toUserId, []);
     }
-    
-    // Check if already sent
-    const existing = friendRequests.get(toUserId).find(r => r.from === socket.id);
-    if (existing) return;
     
     friendRequests.get(toUserId).push({
       from: socket.id,
@@ -160,11 +161,8 @@ io.on('connection', (socket) => {
       from: socket.id,
       fromUsername: fromUser.username
     });
-    
-    socket.emit('friendRequestSent', { toUserId });
   });
 
-  // Accept friend request
   socket.on('acceptFriendRequest', (data) => {
     const { fromUserId } = data;
     const user = users.get(socket.id);
@@ -172,23 +170,21 @@ io.on('connection', (socket) => {
     
     if (!user || !fromUser) return;
     
-    // Add to friends list
     if (!user.friends) user.friends = [];
     if (!fromUser.friends) fromUser.friends = [];
     
     user.friends.push(fromUserId);
     fromUser.friends.push(socket.id);
     
-    // Remove request
     if (friendRequests.has(socket.id)) {
-      friendRequests.set(socket.id, friendRequests.get(socket.id).filter(r => r.from !== fromUserId));
+      friendRequests.set(socket.id, 
+        friendRequests.get(socket.id).filter(r => r.from !== fromUserId));
     }
     
     io.to(socket.id).emit('friendAdded', fromUser);
     io.to(fromUserId).emit('friendAdded', user);
   });
 
-  // Private message with read receipts
   socket.on('privateMessage', (data) => {
     const { to, message, type = 'text', fileUrl, fileName } = data;
     const fromUser = users.get(socket.id);
@@ -204,15 +200,12 @@ io.on('connection', (socket) => {
       type,
       fileUrl: fileUrl || null,
       fileName: fileName || null,
-      timestamp: Date.now(),
-      status: 'sent', // sent, delivered, read
-      statusHistory: [{
-        status: 'sent',
-        timestamp: Date.now()
-      }]
+      timestamp: Date.now()
     };
     
-    const channelId = getPrivateChannelId(socket.id, to);
+    console.log('📨 Message from', fromUser.username, 'to', to, ':', message);
+    
+    const channelId = [socket.id, to].sort().join('-');
     if (!messages.has(channelId)) {
       messages.set(channelId, []);
     }
@@ -222,41 +215,23 @@ io.on('connection', (socket) => {
     socket.emit('privateMessage', messageData);
   });
 
-  // Message delivered
-  socket.on('messageDelivered', (data) => {
-    const { messageId, from } = data;
-    io.to(from).emit('messageStatusUpdate', {
-      messageId,
-      status: 'delivered',
-      timestamp: Date.now()
-    });
+  socket.on('getMessages', (data) => {
+    const { channelId } = data;
+    const channelMessages = messages.get(channelId) || [];
+    socket.emit('messageHistory', { channelId, messages: channelMessages });
   });
 
-  // Message read
-  socket.on('messageRead', (data) => {
-    const { messageId, from } = data;
-    io.to(from).emit('messageStatusUpdate', {
-      messageId,
-      status: 'read',
-      timestamp: Date.now()
-    });
-  });
-
-  // Create group
   socket.on('createGroup', (data) => {
     const groupId = uuidv4();
     const user = users.get(socket.id);
-    
     if (!user) return;
     
     const group = {
       id: groupId,
       name: data.name || 'New Group',
-      avatar: data.avatar || '👥',
+      avatar: '👥',
       members: [socket.id, ...(data.members || [])],
-      admins: [socket.id],
-      createdBy: socket.id,
-      createdAt: Date.now()
+      createdBy: socket.id
     };
     
     groups.set(groupId, group);
@@ -266,122 +241,27 @@ io.on('connection', (socket) => {
     });
   });
 
-  // Group message
-  socket.on('groupMessage', (data) => {
-    const { groupId, message, type = 'text', fileUrl, fileName } = data;
-    const fromUser = users.get(socket.id);
-    const group = groups.get(groupId);
-    
-    if (!fromUser || !group || !group.members.includes(socket.id)) return;
-    
-    const messageData = {
-      id: uuidv4(),
-      from: socket.id,
-      fromUsername: fromUser.username,
-      groupId,
-      message,
-      type,
-      fileUrl: fileUrl || null,
-      fileName: fileName || null,
-      timestamp: Date.now(),
-      status: 'sent'
-    };
-    
-    if (!messages.has(groupId)) {
-      messages.set(groupId, []);
-    }
-    messages.get(groupId).push(messageData);
-    
-    group.members.forEach(memberId => {
-      if (memberId !== socket.id) {
-        io.to(memberId).emit('groupMessage', messageData);
-      }
-    });
-    socket.emit('groupMessage', messageData);
-  });
-
-  // Get messages
-  socket.on('getMessages', (data) => {
-    const { channelId } = data;
-    const channelMessages = messages.get(channelId) || [];
-    socket.emit('messageHistory', { channelId, messages: channelMessages });
-  });
-
-  // Typing indicator
-  socket.on('typing', (data) => {
-    const { to, isTyping } = data;
-    io.to(to).emit('userTyping', {
-      from: socket.id,
-      username: users.get(socket.id)?.username,
-      isTyping
-    });
-  });
-
-  // WebRTC signaling
-  socket.on('callUser', (data) => {
-    io.to(data.userToCall).emit('callUser', {
-      signal: data.signalData,
-      from: socket.id,
-      username: users.get(socket.id)?.username
-    });
-  });
-
-  socket.on('answerCall', (data) => {
-    io.to(data.to).emit('callAccepted', data.signal);
-  });
-
-  socket.on('endCall', (data) => {
-    io.to(data.to).emit('callEnded');
-  });
-
-  // Disconnect
   socket.on('disconnect', () => {
-    console.log('Client disconnected:', socket.id);
+    console.log('❌ Client disconnected:', socket.id);
     const user = users.get(socket.id);
     if (user) {
       user.online = false;
-      user.lastSeen = Date.now();
       broadcastUsersList();
-      socket.broadcast.emit('userOffline', { userId: socket.id, lastSeen: user.lastSeen });
     }
   });
 });
-
-// Helper functions
-function getPrivateChannelId(user1, user2) {
-  return [user1, user2].sort().join('-');
-}
 
 function broadcastUsersList() {
   const usersList = Array.from(users.values()).map(u => ({
     id: u.id,
     username: u.username,
     avatar: u.avatar,
-    online: u.online,
-    lastSeen: u.lastSeen
+    online: u.online
   }));
   io.emit('usersList', usersList);
 }
 
-function getAllUserMessages(username) {
-  const userMessages = [];
-  for (let [channelId, msgs] of messages) {
-    msgs.forEach(msg => {
-      if (msg.fromUsername === username || msg.to === username) {
-        userMessages.push(msg);
-      }
-    });
-  }
-  return userMessages;
-}
-
-// Error handling
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ error: 'Something went wrong!' });
-});
-
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });

@@ -1,10 +1,11 @@
-// Main Application Class
 class MessengerApp {
     constructor() {
         this.socket = null;
         this.peer = null;
         this.currentUser = null;
         this.currentChat = null;
+        this.friends = new Map();
+        this.friendRequests = [];
         this.isVoiceRecording = false;
         this.mediaRecorder = null;
         this.audioChunks = [];
@@ -12,41 +13,69 @@ class MessengerApp {
         this.localStream = null;
         this.remoteStream = null;
         this.isMuted = false;
+        this.isCameraOff = false;
         
         this.init();
     }
 
     init() {
-        this.setupSocketConnection();
+        this.socket = io('/', {
+            transports: ['websocket', 'polling']
+        });
+        
+        this.setupSocketListeners();
         this.setupEventListeners();
         this.createAvatarOptions();
     }
 
-    setupSocketConnection() {
-        // Connect to Socket.io server
-        this.socket = io();
-        
+    setupSocketListeners() {
         this.socket.on('connect', () => {
             console.log('Connected to server');
         });
 
         this.socket.on('registered', (user) => {
             this.currentUser = user;
+            if (user.friends) {
+                user.friends.forEach(friendId => {
+                    this.friends.set(friendId, true);
+                });
+            }
             document.getElementById('currentUsername').textContent = user.username;
-            document.getElementById('currentUserAvatar').textContent = user.username[0].toUpperCase();
+            document.getElementById('currentUserAvatar').textContent = user.avatar || user.username[0].toUpperCase();
             this.showScreen('chatScreen');
+            this.setupPeerConnection();
+        });
+
+        this.socket.on('loginError', (error) => {
+            document.getElementById('loginError').textContent = error;
         });
 
         this.socket.on('usersList', (users) => {
             this.updateUsersList(users);
         });
 
-        this.socket.on('userJoined', (user) => {
-            this.addUserToList(user);
+        this.socket.on('userOnline', (user) => {
+            this.updateUserStatus(user, true);
         });
 
-        this.socket.on('userLeft', (userId) => {
-            this.removeUserFromList(userId);
+        this.socket.on('userOffline', (data) => {
+            this.updateUserStatus(data, false);
+        });
+
+        this.socket.on('newFriendRequest', (data) => {
+            this.friendRequests.push(data);
+            this.updateRequestsBadge();
+            this.showNotification(`Заявка в друзья от ${data.fromUsername}`);
+        });
+
+        this.socket.on('friendRequestSent', (data) => {
+            this.showNotification('Заявка отправлена');
+        });
+
+        this.socket.on('friendAdded', (user) => {
+            this.friends.set(user.id, true);
+            this.addUserToList(user);
+            this.showNotification(`${user.username} теперь ваш друг!`);
         });
 
         this.socket.on('privateMessage', (message) => {
@@ -59,15 +88,20 @@ class MessengerApp {
 
         this.socket.on('groupCreated', (group) => {
             this.addGroupToChats(group);
+            this.showNotification(`Группа "${group.name}" создана`);
         });
 
         this.socket.on('messageHistory', (data) => {
             this.loadMessageHistory(data);
         });
 
+        this.socket.on('messageStatusUpdate', (data) => {
+            this.updateMessageStatus(data);
+        });
+
         this.socket.on('userTyping', (data) => {
             if (this.currentChat && this.currentChat.id === data.from) {
-                this.showTypingIndicator(data.isTyping);
+                this.showTypingIndicator(data.username, data.isTyping);
             }
         });
 
@@ -88,14 +122,16 @@ class MessengerApp {
     }
 
     setupPeerConnection() {
-        if (this.currentUser) {
+        if (this.currentUser && !this.peer) {
             this.peer = new Peer(this.currentUser.id, {
                 host: window.location.hostname,
                 port: window.location.port,
-                path: '/peerjs'
+                path: '/peerjs',
+                secure: window.location.protocol === 'https:'
             });
 
             this.peer.on('call', (call) => {
+                this.showCallModal(false);
                 navigator.mediaDevices.getUserMedia({ video: true, audio: true })
                     .then((stream) => {
                         this.localStream = stream;
@@ -104,7 +140,12 @@ class MessengerApp {
                         call.on('stream', (remoteStream) => {
                             document.getElementById('remoteVideo').srcObject = remoteStream;
                             this.remoteStream = remoteStream;
+                            document.getElementById('callStatus').textContent = 'В разговоре';
                         });
+                    })
+                    .catch(err => {
+                        console.error('Error accessing media:', err);
+                        this.showNotification('Ошибка доступа к камере/микрофону');
                     });
             });
         }
@@ -113,18 +154,25 @@ class MessengerApp {
     setupEventListeners() {
         // Login
         document.getElementById('loginButton').addEventListener('click', () => this.login());
-        document.getElementById('usernameInput').addEventListener('keypress', (e) => {
+        document.getElementById('passwordInput').addEventListener('keypress', (e) => {
             if (e.key === 'Enter') this.login();
         });
 
-        // Message input
-        document.getElementById('messageInput').addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') this.sendMessage();
+        // Auto-resize textarea
+        const textarea = document.getElementById('messageInput');
+        textarea.addEventListener('input', () => {
+            textarea.style.height = 'auto';
+            textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
+            this.handleTyping();
         });
-        document.getElementById('sendMessageBtn').addEventListener('click', () => this.sendMessage());
-        document.getElementById('messageInput').addEventListener('input', () => this.handleTyping());
+        textarea.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                this.sendMessage();
+            }
+        });
 
-        // File upload
+        document.getElementById('sendMessageBtn').addEventListener('click', () => this.sendMessage());
         document.getElementById('attachBtn').addEventListener('click', () => {
             document.getElementById('fileInput').click();
         });
@@ -134,16 +182,30 @@ class MessengerApp {
         const recordBtn = document.getElementById('recordVoiceBtn');
         recordBtn.addEventListener('mousedown', () => this.startVoiceRecording());
         recordBtn.addEventListener('mouseup', () => this.stopVoiceRecording());
+        recordBtn.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            this.startVoiceRecording();
+        });
+        recordBtn.addEventListener('touchend', () => this.stopVoiceRecording());
 
-        // Call buttons
+        // Calls
         document.getElementById('voiceCallBtn').addEventListener('click', () => this.startCall(false));
         document.getElementById('videoCallBtn').addEventListener('click', () => this.startCall(true));
         document.getElementById('endCallBtn').addEventListener('click', () => this.endCall());
         document.getElementById('muteBtn').addEventListener('click', () => this.toggleMute());
+        document.getElementById('cameraBtn').addEventListener('click', () => this.toggleCamera());
 
-        // Group creation
+        // Modals
+        document.getElementById('friendRequestsBtn').addEventListener('click', () => this.showRequestsModal());
+        document.getElementById('closeRequestsBtn').addEventListener('click', () => this.closeRequestsModal());
         document.getElementById('createGroupBtn').addEventListener('click', () => this.showGroupModal());
+        document.getElementById('closeGroupBtn').addEventListener('click', () => this.closeGroupModal());
         document.getElementById('confirmCreateGroup').addEventListener('click', () => this.createGroup());
+
+        // Image viewer
+        document.getElementById('closeViewer').addEventListener('click', () => {
+            document.getElementById('imageViewer').style.display = 'none';
+        });
 
         // Tabs
         document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -151,17 +213,29 @@ class MessengerApp {
         });
 
         // Back button
-        document.getElementById('backBtn').addEventListener('click', () => this.closeChat());
+        document.getElementById('backBtn').addEventListener('click', () => {
+            this.closeChat();
+            document.getElementById('sidebar').classList.add('open');
+        });
+
+        // Sidebar toggle
+        document.getElementById('toggleSidebar').addEventListener('click', () => {
+            document.getElementById('sidebar').classList.toggle('open');
+        });
 
         // Search
         document.getElementById('searchInput').addEventListener('input', (e) => this.handleSearch(e.target.value));
 
-        // Sidebar toggle
-        document.getElementById('toggleSidebar').addEventListener('click', () => this.toggleSidebar());
+        // Close sidebar on mobile when clicking chat
+        document.getElementById('mainChat').addEventListener('click', () => {
+            if (window.innerWidth <= 768) {
+                document.getElementById('sidebar').classList.remove('open');
+            }
+        });
     }
 
     createAvatarOptions() {
-        const avatars = ['😀', '😎', '🤖', '👽', '🦊', '🐱', '🐶', '🦁', '🐼', '🐨'];
+        const avatars = ['😀', '😎', '🤖', '👽', '🦊', '🐱', '🐶', '🦁', '🐼', '🐨', '🐰', '🐯', '🐮', '🐷', '🐸'];
         const grid = document.getElementById('avatarGrid');
         avatars.forEach(avatar => {
             const div = document.createElement('div');
@@ -177,23 +251,21 @@ class MessengerApp {
 
     login() {
         const username = document.getElementById('usernameInput').value.trim();
+        const password = document.getElementById('passwordInput').value.trim();
         const avatar = document.querySelector('.avatar-option.selected')?.textContent;
         
-        if (!username) {
-            alert('Пожалуйста, введите имя');
+        if (!username || !password) {
+            document.getElementById('loginError').textContent = 'Введите имя и пароль';
             return;
         }
 
-        this.socket.emit('register', { username, avatar });
+        document.getElementById('loginError').textContent = '';
+        this.socket.emit('register', { username, password, avatar });
     }
 
     showScreen(screenId) {
         document.querySelectorAll('.screen').forEach(screen => screen.classList.remove('active'));
         document.getElementById(screenId).classList.add('active');
-        
-        if (screenId === 'chatScreen') {
-            this.setupPeerConnection();
-        }
     }
 
     updateUsersList(users) {
@@ -201,7 +273,7 @@ class MessengerApp {
         contactsList.innerHTML = '';
         
         users.forEach(user => {
-            if (user.id !== this.currentUser.id) {
+            if (user.id !== this.currentUser?.id) {
                 this.addUserToList(user);
             }
         });
@@ -214,10 +286,15 @@ class MessengerApp {
         const existingContact = document.getElementById(`contact-${user.id}`);
         
         if (existingContact) {
-            existingContact.querySelector('.online-indicator').style.display = user.online ? 'block' : 'none';
+            const indicator = existingContact.querySelector('.online-indicator');
+            if (indicator) {
+                indicator.style.display = user.online ? 'block' : 'none';
+            }
             return;
         }
 
+        const isFriend = this.friends.has(user.id);
+        
         const div = document.createElement('div');
         div.className = 'contact-item';
         div.id = `contact-${user.id}`;
@@ -226,43 +303,71 @@ class MessengerApp {
                 ${user.avatar || user.username[0].toUpperCase()}
                 <div class="online-indicator" style="display: ${user.online ? 'block' : 'none'}"></div>
             </div>
-            <div class="contact-name">${user.username}</div>
+            <div class="chat-preview">
+                <div class="chat-name">${user.username}</div>
+                <div class="last-message">${isFriend ? '👥 Друг' : 'Нажмите, чтобы добавить'}</div>
+            </div>
+            ${!isFriend ? `<button class="btn-add-friend" onclick="event.stopPropagation(); app.sendFriendRequest('${user.id}')">
+                <i class="fas fa-user-plus"></i>
+            </button>` : ''}
         `;
-        div.addEventListener('click', () => this.openPrivateChat(user));
+        
+        if (isFriend) {
+            div.addEventListener('click', () => this.openPrivateChat(user));
+        }
         contactsList.appendChild(div);
     }
 
-    removeUserFromList(userId) {
+    sendFriendRequest(userId) {
+        this.socket.emit('sendFriendRequest', { toUserId: userId });
+    }
+
+    updateUserStatus(userOrData, isOnline) {
+        const userId = userOrData.id || userOrData.userId;
         const contactElement = document.getElementById(`contact-${userId}`);
         if (contactElement) {
             const indicator = contactElement.querySelector('.online-indicator');
-            if (indicator) indicator.style.display = 'none';
+            if (indicator) {
+                indicator.style.display = isOnline ? 'block' : 'none';
+            }
+        }
+        
+        if (this.currentChat && this.currentChat.id === userId) {
+            document.getElementById('chatStatus').textContent = isOnline ? 'онлайн' : 'был(а) недавно';
         }
     }
 
     openPrivateChat(user) {
-        this.currentChat = { type: 'private', id: user.id, name: user.username };
-        this.showChat(user.username, user.avatar || user.username[0].toUpperCase());
+        this.currentChat = { type: 'private', id: user.id, name: user.username, avatar: user.avatar };
+        this.showChat(user.username, user.avatar || user.username[0].toUpperCase(), user.online);
         
         const channelId = this.getChannelId(user.id);
         this.socket.emit('getMessages', { channelId });
+        
+        this.markMessagesAsRead(channelId);
     }
 
     openGroupChat(groupId) {
-        const group = this.groups?.find(g => g.id === groupId);
-        if (group) {
-            this.currentChat = { type: 'group', id: groupId, name: group.name };
-            this.showChat(group.name, group.avatar || '👥');
-            this.socket.emit('getMessages', { channelId: groupId });
-        }
+        const groupElement = document.getElementById(`group-${groupId}`);
+        if (!groupElement) return;
+        
+        const groupName = groupElement.querySelector('.chat-name').textContent;
+        this.currentChat = { type: 'group', id: groupId, name: groupName };
+        this.showChat(groupName, '👥', false);
+        this.socket.emit('getMessages', { channelId: groupId });
     }
 
-    showChat(name, avatarEmoji) {
+    showChat(name, avatarEmoji, isOnline) {
         document.getElementById('emptyState').style.display = 'none';
         document.getElementById('activeChat').style.display = 'flex';
         document.getElementById('chatName').textContent = name;
         document.getElementById('chatAvatar').textContent = avatarEmoji;
+        document.getElementById('chatStatus').textContent = isOnline ? 'онлайн' : '';
         document.getElementById('messagesList').innerHTML = '';
+        
+        if (window.innerWidth <= 768) {
+            document.getElementById('sidebar').classList.remove('open');
+        }
     }
 
     closeChat() {
@@ -272,8 +377,8 @@ class MessengerApp {
     }
 
     sendMessage() {
-        const input = document.getElementById('messageInput');
-        const message = input.value.trim();
+        const textarea = document.getElementById('messageInput');
+        const message = textarea.value.trim();
         
         if (!message || !this.currentChat) return;
 
@@ -290,8 +395,9 @@ class MessengerApp {
             this.socket.emit('groupMessage', messageData);
         }
 
-        input.value = '';
-        input.focus();
+        textarea.value = '';
+        textarea.style.height = 'auto';
+        textarea.focus();
     }
 
     receiveMessage(messageData) {
@@ -301,14 +407,30 @@ class MessengerApp {
             (this.currentChat.id === messageData.from || this.currentChat.id === messageData.to);
         
         if (isCurrentChat) {
-            this.displayMessage(messageData, messageData.from === this.currentUser.id ? 'sent' : 'received');
+            const type = messageData.from === this.currentUser.id ? 'sent' : 'received';
+            this.displayMessage(messageData, type);
+            
+            if (type === 'received') {
+                this.socket.emit('messageDelivered', {
+                    messageId: messageData.id,
+                    from: messageData.from
+                });
+                setTimeout(() => {
+                    this.socket.emit('messageRead', {
+                        messageId: messageData.id,
+                        from: messageData.from
+                    });
+                }, 1000);
+            }
+        }
+        
+        if (messageData.from !== this.currentUser.id) {
             this.addToChatList(messageData);
         }
     }
 
     receiveGroupMessage(messageData) {
         if (!this.currentChat || this.currentChat.type !== 'group' || this.currentChat.id !== messageData.groupId) return;
-        
         this.displayMessage(messageData, messageData.from === this.currentUser.id ? 'sent' : 'received', true);
     }
 
@@ -316,6 +438,7 @@ class MessengerApp {
         const messagesList = document.getElementById('messagesList');
         const messageDiv = document.createElement('div');
         messageDiv.className = `message ${type}`;
+        messageDiv.id = `msg-${data.id}`;
         
         let content = '';
         
@@ -324,16 +447,29 @@ class MessengerApp {
         }
 
         if (data.type === 'image') {
-            content += `<img src="${data.fileUrl}" class="message-image" onclick="window.open(this.src)">`;
+            content += `<img src="${data.fileUrl}" class="message-image" onclick="app.openImageViewer('${data.fileUrl}')" loading="lazy">`;
         } else if (data.type === 'audio') {
             content += `<audio controls class="message-audio"><source src="${data.fileUrl}"></audio>`;
         } else if (data.type === 'video') {
-            content += `<video controls class="message-video"><source src="${data.fileUrl}"></video>`;
+            content += `<video controls class="message-video" preload="metadata"><source src="${data.fileUrl}"></video>`;
         } else {
-            content += `<div class="message-text">${data.message}</div>`;
+            content += `<div class="message-text">${this.escapeHtml(data.message)}</div>`;
         }
         
-        content += `<div class="message-time">${this.formatTime(data.timestamp)}</div>`;
+        let statusIcon = '';
+        if (type === 'sent') {
+            const status = data.status || 'sent';
+            if (status === 'sent') statusIcon = '<i class="fas fa-check message-status-icon sent"></i>';
+            else if (status === 'delivered') statusIcon = '<i class="fas fa-check-double message-status-icon delivered"></i>';
+            else if (status === 'read') statusIcon = '<i class="fas fa-check-double message-status-icon read"></i>';
+        }
+        
+        content += `
+            <div class="message-meta">
+                <span class="message-time">${this.formatTime(data.timestamp)}</span>
+                ${statusIcon}
+            </div>
+        `;
         
         messageDiv.innerHTML = `<div class="message-content">${content}</div>`;
         messagesList.appendChild(messageDiv);
@@ -341,27 +477,40 @@ class MessengerApp {
     }
 
     addToChatList(messageData) {
-        // Add or update chat in sidebar
-        const channelId = this.getChannelId(messageData.from);
+        const channelId = this.getChannelId(messageData.from === this.currentUser.id ? messageData.to : messageData.from);
         let chatItem = document.getElementById(`chat-${channelId}`);
+        const chatList = document.getElementById('chatList');
         
         if (!chatItem) {
-            const chatList = document.getElementById('chatList');
             chatItem = document.createElement('div');
             chatItem.className = 'chat-item';
             chatItem.id = `chat-${channelId}`;
             chatItem.addEventListener('click', () => {
-                const otherUser = messageData.from === this.currentUser.id ? messageData.to : messageData.from;
-                this.openPrivateChat({ id: otherUser, username: messageData.fromUsername });
+                const otherUser = {
+                    id: messageData.from === this.currentUser.id ? messageData.to : messageData.from,
+                    username: messageData.fromUsername
+                };
+                this.openPrivateChat(otherUser);
             });
             chatList.prepend(chatItem);
         }
         
+        const preview = messageData.type === 'image' ? '📷 Фото' : 
+                       messageData.type === 'audio' ? '🎤 Голосовое' : 
+                       messageData.type === 'video' ? '📹 Видео' : 
+                       messageData.message.substring(0, 30);
+        
         chatItem.innerHTML = `
             <div class="avatar">${messageData.fromUsername[0].toUpperCase()}</div>
             <div class="chat-preview">
-                <div class="chat-name">${messageData.fromUsername}</div>
-                <div class="last-message">${messageData.message.substring(0, 30)}</div>
+                <div class="chat-name">
+                    ${messageData.fromUsername}
+                    <span class="chat-time">${this.formatTime(messageData.timestamp)}</span>
+                </div>
+                <div class="last-message">
+                    ${preview}
+                    ${messageData.from === this.currentUser.id ? '<span class="message-status sent"><i class="fas fa-check"></i></span>' : ''}
+                </div>
             </div>
         `;
     }
@@ -381,7 +530,8 @@ class MessengerApp {
             const data = await response.json();
             
             const messageData = {
-                message: '',
+                message: file.type.startsWith('image/') ? '📷 Фото' : 
+                        file.type.startsWith('audio/') ? '🎤 Аудио' : '📹 Видео',
                 type: file.type.split('/')[0],
                 fileUrl: data.url,
                 fileName: data.name,
@@ -397,7 +547,7 @@ class MessengerApp {
             }
         } catch (error) {
             console.error('Upload failed:', error);
-            alert('Ошибка при загрузке файла');
+            this.showNotification('Ошибка при загрузке файла');
         }
         
         event.target.value = '';
@@ -424,7 +574,7 @@ class MessengerApp {
             })
             .catch(err => {
                 console.error('Error accessing microphone:', err);
-                alert('Нет доступа к микрофону');
+                this.showNotification('Нет доступа к микрофону');
             });
     }
 
@@ -433,8 +583,6 @@ class MessengerApp {
             this.mediaRecorder.stop();
             this.isVoiceRecording = false;
             document.getElementById('recordVoiceBtn').style.color = '';
-            
-            // Stop all tracks
             this.mediaRecorder.stream.getTracks().forEach(track => track.stop());
         }
     }
@@ -479,7 +627,6 @@ class MessengerApp {
                 isTyping: true
             });
             
-            // Stop typing after 2 seconds of inactivity
             clearTimeout(this.typingTimeout);
             this.typingTimeout = setTimeout(() => {
                 this.socket.emit('typing', {
@@ -490,9 +637,15 @@ class MessengerApp {
         }
     }
 
-    showTypingIndicator(isTyping) {
+    showTypingIndicator(username, isTyping) {
         const indicator = document.getElementById('typingIndicator');
-        indicator.style.display = isTyping ? 'flex' : 'none';
+        const usernameEl = document.getElementById('typingUsername');
+        if (isTyping) {
+            usernameEl.textContent = username;
+            indicator.style.display = 'flex';
+        } else {
+            indicator.style.display = 'none';
+        }
     }
 
     async startCall(videoEnabled) {
@@ -506,8 +659,7 @@ class MessengerApp {
             
             this.localStream = stream;
             document.getElementById('localVideo').srcObject = stream;
-            document.getElementById('callModal').style.display = 'flex';
-            document.getElementById('callTitle').textContent = videoEnabled ? 'Видеозвонок' : 'Аудиозвонок';
+            this.showCallModal(videoEnabled);
             document.getElementById('callStatus').textContent = 'Вызов...';
             
             this.callPeer = this.peer.call(this.currentChat.id, stream);
@@ -521,14 +673,19 @@ class MessengerApp {
             this.callPeer.on('close', () => {
                 this.endCall();
             });
+
+            this.callPeer.on('error', (err) => {
+                console.error('Call error:', err);
+                this.endCall();
+            });
         } catch (error) {
             console.error('Error starting call:', error);
-            alert('Не удалось начать звонок. Проверьте разрешения камеры и микрофона.');
+            this.showNotification('Не удалось начать звонок. Проверьте разрешения.');
         }
     }
 
     async handleIncomingCall(data) {
-        const accept = confirm(`${data.from.username || 'Пользователь'} звонит вам. Принять?`);
+        const accept = confirm(`${data.username || 'Пользователь'} звонит вам. Принять?`);
         
         if (accept) {
             try {
@@ -536,20 +693,23 @@ class MessengerApp {
                 this.localStream = stream;
                 
                 document.getElementById('localVideo').srcObject = stream;
-                document.getElementById('callModal').style.display = 'flex';
+                this.showCallModal(true);
                 document.getElementById('callStatus').textContent = 'Соединение...';
                 
                 this.socket.emit('answerCall', {
                     to: data.from,
                     signal: null
                 });
-                
-                // Setup peer connection
-                this.setupPeerConnection();
             } catch (error) {
                 console.error('Error accepting call:', error);
             }
         }
+    }
+
+    showCallModal(videoEnabled) {
+        document.getElementById('callModal').style.display = 'flex';
+        document.getElementById('callTitle').textContent = videoEnabled ? 'Видеозвонок' : 'Аудиозвонок';
+        document.getElementById('remoteVideo').style.display = videoEnabled ? 'block' : 'none';
     }
 
     endCall() {
@@ -589,22 +749,121 @@ class MessengerApp {
         }
     }
 
+    toggleCamera() {
+        if (this.localStream) {
+            const videoTrack = this.localStream.getVideoTracks()[0];
+            if (videoTrack) {
+                this.isCameraOff = !this.isCameraOff;
+                videoTrack.enabled = !this.isCameraOff;
+                const cameraBtn = document.getElementById('cameraBtn');
+                cameraBtn.innerHTML = this.isCameraOff ? '<i class="fas fa-video-slash"></i>' : '<i class="fas fa-video"></i>';
+            }
+        }
+    }
+
+    showRequestsModal() {
+        document.getElementById('requestsModal').style.display = 'flex';
+        this.renderRequestsList();
+    }
+
+    closeRequestsModal() {
+        document.getElementById('requestsModal').style.display = 'none';
+    }
+
+    renderRequestsList() {
+        const list = document.getElementById('requestsList');
+        if (this.friendRequests.length === 0) {
+            list.innerHTML = '<p class="empty-text">Нет новых заявок</p>';
+            return;
+        }
+        
+        list.innerHTML = this.friendRequests.map(req => `
+            <div class="request-item">
+                <div class="request-info">
+                    <div class="avatar">${req.fromUsername[0].toUpperCase()}</div>
+                    <span>${req.fromUsername}</span>
+                </div>
+                <div>
+                    <button class="btn-accept" onclick="app.acceptFriendRequest('${req.from}')">
+                        <i class="fas fa-check"></i> Принять
+                    </button>
+                    <button class="btn-reject" onclick="app.rejectFriendRequest('${req.from}')">
+                        <i class="fas fa-times"></i> Отклонить
+                    </button>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    acceptFriendRequest(fromUserId) {
+        this.socket.emit('acceptFriendRequest', { fromUserId });
+        this.friendRequests = this.friendRequests.filter(r => r.from !== fromUserId);
+        this.updateRequestsBadge();
+        this.closeRequestsModal();
+    }
+
+    rejectFriendRequest(fromUserId) {
+        this.friendRequests = this.friendRequests.filter(r => r.from !== fromUserId);
+        this.updateRequestsBadge();
+        if (this.friendRequests.length === 0) {
+            this.closeRequestsModal();
+        } else {
+            this.renderRequestsList();
+        }
+    }
+
+    updateRequestsBadge() {
+        const badge = document.getElementById('requestsBadge');
+        if (this.friendRequests.length > 0) {
+            badge.textContent = this.friendRequests.length;
+            badge.style.display = 'flex';
+        } else {
+            badge.style.display = 'none';
+        }
+    }
+
     showGroupModal() {
         document.getElementById('groupModal').style.display = 'flex';
         this.renderGroupMembersList();
     }
 
+    closeGroupModal() {
+        document.getElementById('groupModal').style.display = 'none';
+    }
+
     renderGroupMembersList() {
         const membersList = document.getElementById('groupMembersList');
+        const users = document.querySelectorAll('.contact-item');
         membersList.innerHTML = '';
         
-        this.socket.emit('getUsers');
+        users.forEach(userEl => {
+            const userId = userEl.id.replace('contact-', '');
+            if (this.friends.has(userId)) {
+                const name = userEl.querySelector('.chat-name').textContent;
+                const avatar = userEl.querySelector('.avatar').textContent.trim();
+                
+                const div = document.createElement('div');
+                div.className = 'member-checkbox';
+                div.innerHTML = `
+                    <input type="checkbox" class="group-member-checkbox" value="${userId}" id="member-${userId}">
+                    <label for="member-${userId}">
+                        <div class="avatar" style="width: 35px; height: 35px; font-size: 16px;">${avatar}</div>
+                        <span>${name}</span>
+                    </label>
+                `;
+                membersList.appendChild(div);
+            }
+        });
+        
+        if (membersList.children.length === 0) {
+            membersList.innerHTML = '<p class="empty-text">Нет друзей для добавления</p>';
+        }
     }
 
     createGroup() {
         const groupName = document.getElementById('groupNameInput').value.trim();
         if (!groupName) {
-            alert('Введите название группы');
+            this.showNotification('Введите название группы');
             return;
         }
         
@@ -612,7 +871,7 @@ class MessengerApp {
             .map(cb => cb.value);
         
         if (selectedMembers.length === 0) {
-            alert('Выберите хотя бы одного участника');
+            this.showNotification('Выберите хотя бы одного участника');
             return;
         }
         
@@ -621,7 +880,7 @@ class MessengerApp {
             members: selectedMembers
         });
         
-        document.getElementById('groupModal').style.display = 'none';
+        this.closeGroupModal();
         document.getElementById('groupNameInput').value = '';
     }
 
@@ -650,6 +909,40 @@ class MessengerApp {
             const showSender = this.currentChat?.type === 'group';
             this.displayMessage(message, type, showSender && type === 'received');
         });
+        
+        messagesList.scrollTop = messagesList.scrollHeight;
+    }
+
+    updateMessageStatus(data) {
+        const messageEl = document.getElementById(`msg-${data.messageId}`);
+        if (messageEl) {
+            const statusIcon = messageEl.querySelector('.message-status-icon');
+            if (statusIcon) {
+                if (data.status === 'delivered') {
+                    statusIcon.className = 'fas fa-check-double message-status-icon delivered';
+                } else if (data.status === 'read') {
+                    statusIcon.className = 'fas fa-check-double message-status-icon read';
+                }
+            }
+        }
+    }
+
+    markMessagesAsRead(channelId) {
+        const messages = document.querySelectorAll(`#messagesList .message.received`);
+        messages.forEach(msg => {
+            const messageId = msg.id.replace('msg-', '');
+            if (messageId) {
+                this.socket.emit('messageRead', {
+                    messageId,
+                    from: this.currentChat?.id
+                });
+            }
+        });
+    }
+
+    openImageViewer(url) {
+        document.getElementById('viewerImage').src = url;
+        document.getElementById('imageViewer').style.display = 'flex';
     }
 
     switchTab(tab) {
@@ -668,27 +961,54 @@ class MessengerApp {
         });
     }
 
-    toggleSidebar() {
-        document.getElementById('sidebar').classList.toggle('open');
-    }
-
     getChannelId(otherUserId) {
         return [this.currentUser.id, otherUserId].sort().join('-');
     }
 
     formatTime(timestamp) {
         const date = new Date(timestamp);
-        return date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+        const today = new Date();
+        const isToday = date.toDateString() === today.toDateString();
+        
+        if (isToday) {
+            return date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+        } else {
+            return date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
+        }
+    }
+
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    showNotification(message) {
+        // Simple notification
+        const notification = document.createElement('div');
+        notification.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: #333;
+            color: white;
+            padding: 12px 20px;
+            border-radius: 8px;
+            z-index: 9999;
+            animation: slideIn 0.3s ease;
+        `;
+        notification.textContent = message;
+        document.body.appendChild(notification);
+        
+        setTimeout(() => {
+            notification.remove();
+        }, 3000);
     }
 }
 
-// Close group modal
-function closeGroupModal() {
-    document.getElementById('groupModal').style.display = 'none';
-}
-
-// Initialize app when DOM is loaded
+// Initialize app
+let app;
 document.addEventListener('DOMContentLoaded', () => {
-    const app = new MessengerApp();
-    window.closeGroupModal = closeGroupModal;
+    app = new MessengerApp();
+    window.app = app;
 });

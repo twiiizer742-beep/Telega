@@ -19,7 +19,7 @@ const io = socketIO(server, {
 // Configure multer for file uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const uploadDir = path.join(__dirname, 'public', 'uploads');
+    const uploadDir = path.join(__dirname, 'uploads');
     if (!fs.existsSync(uploadDir)) {
       fs.mkdirSync(uploadDir, { recursive: true });
     }
@@ -47,8 +47,8 @@ const upload = multer({
   }
 });
 
-// Serve static files
-app.use(express.static('public'));
+// Serve static files - ИСПРАВЛЕНО: теперь ищет файлы в корне
+app.use(express.static(__dirname));
 
 // File upload endpoint
 app.post('/upload', upload.single('file'), (req, res) => {
@@ -73,15 +73,14 @@ const peerServer = ExpressPeerServer(server, {
 app.use('/peerjs', peerServer);
 
 // In-memory data stores
-const users = new Map(); // userId -> { id, username, avatar, online, socketId }
-const groups = new Map(); // groupId -> { id, name, avatar, members: [], createdBy }
-const messages = new Map(); // channelId -> [messages]
+const users = new Map();
+const groups = new Map();
+const messages = new Map();
 
 // Socket.io connection handling
 io.on('connection', (socket) => {
   console.log('New client connected:', socket.id);
 
-  // User registration/login
   socket.on('register', (userData) => {
     const user = {
       id: socket.id,
@@ -93,17 +92,11 @@ io.on('connection', (socket) => {
     users.set(socket.id, user);
     socket.userId = socket.id;
     
-    // Send back user data
     socket.emit('registered', user);
-    
-    // Broadcast online users list
     broadcastUsersList();
-    
-    // Notify others about new user
     socket.broadcast.emit('userJoined', user);
   });
 
-  // Private message
   socket.on('privateMessage', (data) => {
     const { to, message, type = 'text', fileUrl, fileName } = data;
     const fromUser = users.get(socket.id);
@@ -122,20 +115,16 @@ io.on('connection', (socket) => {
       timestamp: Date.now()
     };
     
-    // Store message
     const channelId = getPrivateChannelId(socket.id, to);
     if (!messages.has(channelId)) {
       messages.set(channelId, []);
     }
     messages.get(channelId).push(messageData);
     
-    // Send to recipient
     io.to(to).emit('privateMessage', messageData);
-    // Send back to sender for confirmation
     socket.emit('privateMessage', messageData);
   });
 
-  // Group creation
   socket.on('createGroup', (data) => {
     const groupId = uuidv4();
     const user = users.get(socket.id);
@@ -153,7 +142,6 @@ io.on('connection', (socket) => {
     
     groups.set(groupId, group);
     
-    // Notify all members
     group.members.forEach(memberId => {
       io.to(memberId).emit('groupCreated', group);
     });
@@ -161,7 +149,6 @@ io.on('connection', (socket) => {
     socket.emit('groupCreated', group);
   });
 
-  // Group message
   socket.on('groupMessage', (data) => {
     const { groupId, message, type = 'text', fileUrl, fileName } = data;
     const fromUser = users.get(socket.id);
@@ -181,29 +168,24 @@ io.on('connection', (socket) => {
       timestamp: Date.now()
     };
     
-    // Store message
     if (!messages.has(groupId)) {
       messages.set(groupId, []);
     }
     messages.get(groupId).push(messageData);
     
-    // Send to all group members
     group.members.forEach(memberId => {
       io.to(memberId).emit('groupMessage', messageData);
     });
   });
 
-  // Get message history
   socket.on('getMessages', (data) => {
     const { channelId } = data;
     const channelMessages = messages.get(channelId) || [];
     socket.emit('messageHistory', { channelId, messages: channelMessages });
   });
 
-  // Voice message
   socket.on('voiceMessage', (data) => {
     const { to, audioBlob } = data;
-    // Handle voice message - in production, save to storage
     io.to(to).emit('voiceMessage', {
       from: socket.id,
       audioBlob,
@@ -211,7 +193,6 @@ io.on('connection', (socket) => {
     });
   });
 
-  // Typing indicator
   socket.on('typing', (data) => {
     const { to, isTyping } = data;
     io.to(to).emit('userTyping', {
@@ -220,7 +201,6 @@ io.on('connection', (socket) => {
     });
   });
 
-  // Call initiation
   socket.on('callUser', (data) => {
     const { userToCall, signalData, from } = data;
     io.to(userToCall).emit('callUser', {
@@ -229,19 +209,16 @@ io.on('connection', (socket) => {
     });
   });
 
-  // Answer call
   socket.on('answerCall', (data) => {
     const { to, signal } = data;
     io.to(to).emit('callAccepted', signal);
   });
 
-  // End call
   socket.on('endCall', (data) => {
     const { to } = data;
     io.to(to).emit('callEnded');
   });
 
-  // Group call
   socket.on('joinGroupCall', (data) => {
     const { groupId } = data;
     socket.join(`groupCall:${groupId}`);
@@ -259,7 +236,6 @@ io.on('connection', (socket) => {
     });
   });
 
-  // Disconnect
   socket.on('disconnect', () => {
     const user = users.get(socket.id);
     if (user) {
@@ -271,7 +247,6 @@ io.on('connection', (socket) => {
   });
 });
 
-// Helper functions
 function getPrivateChannelId(user1, user2) {
   return [user1, user2].sort().join('-');
 }
@@ -286,7 +261,6 @@ function broadcastUsersList() {
   io.emit('usersList', usersList);
 }
 
-// Error handling
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).json({ error: 'Something went wrong!' });

@@ -2,11 +2,9 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Telegram Clone Messenger</title>
-    <link rel="stylesheet" href="style.css">
-    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-    <script src="https://unpkg.com/peerjs@1.5.1/dist/peerjs.min.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Telegram Clone</title>
+    <link rel="stylesheet" href="/style.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
 <body>
@@ -19,17 +17,22 @@
                         <i class="fas fa-paper-plane"></i>
                     </div>
                     <h1>Telegram Clone</h1>
-                    <p class="subtitle">Войдите, чтобы начать общение</p>
+                    <p class="subtitle">Войдите или зарегистрируйтесь</p>
                     <div class="input-group">
-                        <input type="text" id="usernameInput" placeholder="Введите ваше имя" maxlength="30">
-                        <button id="loginButton" class="btn-primary">
-                            <i class="fas fa-arrow-right"></i>
-                        </button>
+                        <input type="text" id="usernameInput" placeholder="Имя пользователя" maxlength="30" autocomplete="username">
                     </div>
+                    <div class="input-group">
+                        <input type="password" id="passwordInput" placeholder="Пароль" maxlength="50" autocomplete="current-password">
+                    </div>
+                    <p class="hint">Новый пользователь? Просто введите имя и пароль</p>
                     <div class="avatar-selection">
                         <p>Выберите аватар:</p>
                         <div class="avatar-grid" id="avatarGrid"></div>
                     </div>
+                    <button id="loginButton" class="btn-primary">
+                        <i class="fas fa-sign-in-alt"></i> Войти
+                    </button>
+                    <p id="loginError" class="error-message"></p>
                 </div>
             </div>
         </div>
@@ -42,11 +45,20 @@
                     <div class="sidebar-header">
                         <div class="user-profile">
                             <div class="avatar" id="currentUserAvatar"></div>
-                            <span id="currentUsername"></span>
+                            <div class="user-info">
+                                <span id="currentUsername"></span>
+                                <span class="last-seen" id="userLastSeen"></span>
+                            </div>
                         </div>
-                        <button class="icon-btn" id="toggleSidebar">
-                            <i class="fas fa-bars"></i>
-                        </button>
+                        <div class="header-actions">
+                            <button class="icon-btn" id="friendRequestsBtn" title="Заявки в друзья">
+                                <i class="fas fa-user-plus"></i>
+                                <span class="badge" id="requestsBadge" style="display: none;">0</span>
+                            </button>
+                            <button class="icon-btn" id="toggleSidebar">
+                                <i class="fas fa-bars"></i>
+                            </button>
+                        </div>
                     </div>
                     <div class="search-container">
                         <input type="text" id="searchInput" placeholder="Поиск...">
@@ -72,22 +84,20 @@
 
                 <!-- Main Chat Area -->
                 <div class="main-chat" id="mainChat">
-                    <!-- Empty state -->
                     <div class="empty-state" id="emptyState">
                         <div class="empty-state-content">
                             <i class="fas fa-comments"></i>
                             <h2>Выберите чат</h2>
-                            <p>Начните общение с контактами или создайте группу</p>
+                            <p>Начните общение с друзьями или создайте группу</p>
                         </div>
                     </div>
 
-                    <!-- Active chat -->
                     <div class="active-chat" id="activeChat" style="display: none;">
                         <div class="chat-header">
                             <button class="icon-btn back-btn" id="backBtn">
                                 <i class="fas fa-arrow-left"></i>
                             </button>
-                            <div class="chat-info">
+                            <div class="chat-info" id="chatInfo">
                                 <div class="chat-avatar" id="chatAvatar"></div>
                                 <div class="chat-details">
                                     <h3 id="chatName"></h3>
@@ -95,10 +105,10 @@
                                 </div>
                             </div>
                             <div class="chat-actions">
-                                <button class="icon-btn" id="voiceCallBtn">
+                                <button class="icon-btn" id="voiceCallBtn" title="Аудиозвонок">
                                     <i class="fas fa-phone"></i>
                                 </button>
-                                <button class="icon-btn" id="videoCallBtn">
+                                <button class="icon-btn" id="videoCallBtn" title="Видеозвонок">
                                     <i class="fas fa-video"></i>
                                 </button>
                             </div>
@@ -106,24 +116,24 @@
                         <div class="messages-container" id="messagesContainer">
                             <div class="messages-list" id="messagesList"></div>
                             <div id="typingIndicator" class="typing-indicator" style="display: none;">
-                                <span>печатает</span>
+                                <span id="typingUsername"></span>
                                 <div class="typing-dots">
                                     <span></span><span></span><span></span>
                                 </div>
                             </div>
                         </div>
                         <div class="message-input-container">
-                            <button class="icon-btn" id="attachBtn">
+                            <button class="icon-btn" id="attachBtn" title="Прикрепить файл">
                                 <i class="fas fa-paperclip"></i>
                             </button>
                             <input type="file" id="fileInput" style="display: none;" accept="image/*,audio/*,video/*">
                             <div class="input-wrapper">
-                                <input type="text" id="messageInput" placeholder="Сообщение..." autocomplete="off">
-                                <button class="icon-btn" id="recordVoiceBtn">
+                                <textarea id="messageInput" placeholder="Сообщение..." rows="1"></textarea>
+                                <button class="icon-btn record-btn" id="recordVoiceBtn" title="Голосовое сообщение">
                                     <i class="fas fa-microphone"></i>
                                 </button>
                             </div>
-                            <button class="icon-btn send-btn" id="sendMessageBtn">
+                            <button class="icon-btn send-btn" id="sendMessageBtn" title="Отправить">
                                 <i class="fas fa-paper-plane"></i>
                             </button>
                         </div>
@@ -133,29 +143,46 @@
         </div>
     </div>
 
+    <!-- Image Viewer Modal -->
+    <div id="imageViewer" class="image-viewer" style="display: none;">
+        <span class="close-viewer" id="closeViewer">&times;</span>
+        <img id="viewerImage" src="" alt="Image">
+    </div>
+
     <!-- Call Modal -->
     <div id="callModal" class="modal" style="display: none;">
         <div class="call-container">
-            <div class="call-info">
+            <div class="call-header">
                 <h3 id="callTitle">Звонок</h3>
                 <p id="callStatus">Соединение...</p>
-                <div id="remoteVideoContainer">
-                    <video id="remoteVideo" autoplay></video>
-                </div>
-                <div id="localVideoContainer">
-                    <video id="localVideo" autoplay muted></video>
-                </div>
+            </div>
+            <div class="call-videos">
+                <video id="remoteVideo" autoplay playsinline></video>
+                <video id="localVideo" autoplay muted playsinline></video>
             </div>
             <div class="call-controls">
-                <button class="call-btn" id="muteBtn">
+                <button class="call-btn" id="muteBtn" title="Микрофон">
                     <i class="fas fa-microphone"></i>
                 </button>
-                <button class="call-btn end-call" id="endCallBtn">
+                <button class="call-btn end-call" id="endCallBtn" title="Завершить">
                     <i class="fas fa-phone-slash"></i>
                 </button>
-                <button class="call-btn" id="speakerBtn">
-                    <i class="fas fa-volume-up"></i>
+                <button class="call-btn" id="cameraBtn" title="Камера">
+                    <i class="fas fa-video"></i>
                 </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Friend Requests Modal -->
+    <div id="requestsModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Заявки в друзья</h2>
+                <button class="close-btn" id="closeRequestsBtn">&times;</button>
+            </div>
+            <div class="modal-body" id="requestsList">
+                <p class="empty-text">Нет новых заявок</p>
             </div>
         </div>
     </div>
@@ -165,7 +192,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h2>Создать группу</h2>
-                <button class="close-btn" onclick="closeGroupModal()">&times;</button>
+                <button class="close-btn" id="closeGroupBtn">&times;</button>
             </div>
             <div class="modal-body">
                 <input type="text" id="groupNameInput" placeholder="Название группы" maxlength="50">
@@ -178,6 +205,8 @@
         </div>
     </div>
 
-    <script src="app.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://unpkg.com/peerjs@1.5.1/dist/peerjs.min.js"></script>
+    <script src="/app.js"></script>
 </body>
 </html>

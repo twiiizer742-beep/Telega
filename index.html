@@ -1,84 +1,78 @@
 <!doctype html>
+
+function draw(x){
+let d=document.createElement('div');
+d.className='msg '+(x.from===me.id?'sent':'recv');
+d.innerHTML=`<div class=bubble>${x.text}</div>`;
+msgs.appendChild(d);
+msgs.scrollTop=msgs.scrollHeight;
+}
+
+m.addEventListener('keydown',e=>{if(e.key==='Enter')send()});
+m.addEventListener('input',()=>{
+if(mode!=='dm'||!current)return;
+socket.emit('typing',{to:current.id,isTyping:true});
 clearTimeout(window.tt);
-window.tt=setTimeout(()=>socket.emit('typing',{to:currentChat.id,isTyping:false}),900)
-});
-socket.on('userTyping',d=>typing.style.display=d.isTyping?'block':'none');
+window.tt=setTimeout(()=>socket.emit('typing',{to:current.id,isTyping:false}),1000)
+})
+socket.on('typing',d=>typing.style.display=d.isTyping?'block':'none');
 
-function newGroup(){
+function mkGroup(){
 let n=prompt('Название группы');
-if(!n) return;
-let ids=prompt('ID участников через запятую (до100), можно пусто').split(',').map(v=>v.trim()).filter(Boolean);
-socket.emit('createGroup',{name:n,members:ids});
+if(!n)return;
+socket.emit('groupCreate',{name:n,members:[]})
 }
-
-function newChannel(){
+function mkChannel(){
 let n=prompt('Название канала');
-if(!n) return;
-socket.emit('createChannel',{name:n});
+if(!n)return;
+socket.emit('channelCreate',n)
 }
 
-function closeMobileChat(){chat.classList.remove('open')}
-
-/* CALLS */
-async function setupPeer(){
+async function peer(){
 pc=new RTCPeerConnection(rtc);
 pc.onicecandidate=e=>{
-if(e.candidate&&currentChat){
-socket.emit('iceCandidate',{to:currentChat.id,candidate:e.candidate});
+if(e.candidate&&current){
+socket.emit('ice',{to:current.id,candidate:e.candidate})
 }
-};
-pc.ontrack=e=>{
-remoteVideo.srcObject=e.streams[0];
-};
-localStream=await navigator.mediaDevices.getUserMedia({audio:true,video:false});
-localVideo.srcObject=localStream;
+}
+localStream=await navigator.mediaDevices.getUserMedia({audio:true});
 localStream.getTracks().forEach(t=>pc.addTrack(t,localStream));
 }
 
-async function startCall(){
-if(!currentChat||currentMode!=='dm') return;
-await setupPeer();
-callModal.style.display='flex';
+async function callUser(){
+if(mode!=='dm'||!current)return;
+await peer();
+call.style.display='flex';
 let offer=await pc.createOffer();
 await pc.setLocalDescription(offer);
-socket.emit('callUser',{to:currentChat.id,username:me.username,offer});
+socket.emit('callOffer',{to:current.id,offer,name:me.username})
 }
 
-socket.on('incomingCall',async data=>{
-if(!confirm('Входящий звонок от '+data.username)) return;
-currentChat={id:data.from};
-await setupPeer();
-callModal.style.display='flex';
-await pc.setRemoteDescription(data.offer);
-let ans=await pc.createAnswer();
-await pc.setLocalDescription(ans);
-socket.emit('answerCall',{to:data.from,answer:ans});
+socket.on('callOffer',async d=>{
+if(!confirm('Звонит '+d.name))return;
+current={id:d.from};
+await peer();
+call.style.display='flex';
+await pc.setRemoteDescription(d.offer);
+let a=await pc.createAnswer();
+await pc.setLocalDescription(a);
+socket.emit('callAnswer',{to:d.from,answer:a})
 });
 
-socket.on('callAnswered',async d=>{
-await pc.setRemoteDescription(d.answer)
+socket.on('callAnswer',async a=>{
+await pc.setRemoteDescription(a)
 });
-
-socket.on('iceCandidate',async c=>{
+socket.on('ice',async c=>{
 try{await pc.addIceCandidate(c)}catch(e){}
 });
-
-socket.on('callEnded',hangup);
+socket.on('hangup',hangup);
 
 function hangup(){
-if(pc) pc.close();
+if(pc)pc.close();
 pc=null;
-if(localStream){
-localStream.getTracks().forEach(t=>t.stop())
-}
-callModal.style.display='none';
-if(currentChat) socket.emit('endCall',currentChat.id)
-}
-
-function toggleMute(){
-if(!localStream) return;
-let t=localStream.getAudioTracks()[0];
-if(t) t.enabled=!t.enabled;
+if(localStream)localStream.getTracks().forEach(t=>t.stop());
+call.style.display='none';
+if(current)socket.emit('hangup',current.id)
 }
 </script>
 </body>

@@ -1,11 +1,4 @@
 const express=require('express');
-text:sanitize(data.text),
-ts:Date.now()
-};
-c.posts.unshift(post);
-save(d);
-for(let uid of c.subscribers){
-let sid=online.get(uid);
 if(sid) io.to(sid).emit('channelPost',{
 channelId:c.id,
 post

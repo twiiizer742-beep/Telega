@@ -1,66 +1,69 @@
 const express=require('express');
-if(sid) io.to(sid).emit('channelPost',{
-channelId:c.id,
-post
-});
-}
-});
-
-socket.on('loadChannels',()=>{
-let d=db();
-socket.emit('channelsList',d.channels);
-});
-
-socket.on('loadGroups',()=>{
-let d=db();
-socket.emit(
-'groupsList',
-d.groups.filter(g=>g.members.includes(socket.userId))
-);
+ let c={
+ id:uuid(),
+ name:esc(name),
+ owner:socket.userId,
+ posts:[]
+ };
+ d.channels.push(c);
+ save(d);
+ socket.emit('channelAdded',c);
 });
 
-/* calls signaling */
-socket.on('callUser',data=>{
-let target=online.get(data.to);
-if(target){
-io.to(target).emit('incomingCall',{
-from:socket.userId,
-username:data.username,
-offer:data.offer
-});
-}
+socket.on('channelList',()=>{
+ let d=load();
+ socket.emit('channelListData',d.channels);
 });
 
-socket.on('answerCall',data=>{
-let target=online.get(data.to);
-if(target){
-io.to(target).emit('callAnswered',{
-answer:data.answer
-});
-}
-});
-
-socket.on('iceCandidate',data=>{
-let target=online.get(data.to);
-if(target){
-io.to(target).emit('iceCandidate',data.candidate);
-}
+socket.on('channelPost',data=>{
+ let d=load();
+ let c=d.channels.find(x=>x.id===data.id);
+ if(!c||c.owner!==socket.userId) return;
+ let p={
+ id:uuid(),
+ text:esc(data.text),
+ ts:Date.now()
+ };
+ c.posts.unshift(p);
+ save(d);
+ io.emit('channelPost',{channelId:c.id,post:p});
 });
 
-socket.on('endCall',to=>{
-let t=online.get(to);
-if(t) io.to(t).emit('callEnded');
+/* WEBRTC SIGNAL */
+socket.on('callOffer',d=>{
+ let t=online.get(d.to);
+ if(t) io.to(t).emit('callOffer',{
+ from:socket.userId,
+ offer:d.offer,
+ name:d.name
+ });
+});
+
+socket.on('callAnswer',d=>{
+ let t=online.get(d.to);
+ if(t) io.to(t).emit('callAnswer',d.answer)
+});
+
+socket.on('ice',d=>{
+ let t=online.get(d.to);
+ if(t) io.to(t).emit('ice',d.candidate)
+});
+
+socket.on('hangup',to=>{
+ let t=online.get(to);
+ if(t) io.to(t).emit('hangup')
 });
 
 socket.on('disconnect',()=>{
-if(socket.userId){
-online.delete(socket.userId);
-emitUsers();
-}
+ if(socket.userId){
+ online.delete(socket.userId);
+ broadcastUsers();
+ }
 });
 
 });
 
-server.listen(3000,()=>
-console.log('Матрешка работает :3000')
-)
+const PORT=process.env.PORT||3000;
+server.listen(PORT,'0.0.0.0',()=>{
+console.log('Matreshka running',PORT)
+});
